@@ -183,6 +183,8 @@ pub fn run_native(app_name: &str, native_options: NativeOptions, app_creator: Ap
     }
 }
 
+pub use native::run::{idle_wgpu, WgpuIdle};
+
 // ---------------------------------------------------------------------------
 
 /// Profiling macro for feature "puffin"

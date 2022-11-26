@@ -108,6 +108,11 @@ pub fn window_builder(
         }
     }
 
+    if let Some(parent) = native_options.parent_window {
+        use winit::platform::windows::WindowBuilderExtWindows;
+        window_builder = window_builder.with_parent_window(parent);
+    }
+
     window_builder
 }
 

@@ -68,10 +68,10 @@ fn create_event_loop_builder(
 ///
 /// We reuse the event-loop so we can support closing and opening an eframe window
 /// multiple times. This is just a limitation of winit.
-fn with_event_loop(
+fn with_event_loop<T>(
     mut native_options: epi::NativeOptions,
-    f: impl FnOnce(&mut EventLoop<UserEvent>, NativeOptions),
-) {
+    f: impl FnOnce(&mut EventLoop<UserEvent>, NativeOptions) -> T,
+) -> T {
     use std::cell::RefCell;
     thread_local!(static EVENT_LOOP: RefCell<Option<EventLoop<UserEvent>>> = RefCell::new(None));
 
@@ -82,8 +82,8 @@ fn with_event_loop(
         let mut event_loop = event_loop.borrow_mut();
         let event_loop = event_loop
             .get_or_insert_with(|| create_event_loop_builder(&mut native_options).build());
-        f(event_loop, native_options);
-    });
+        f(event_loop, native_options)
+    })
 }
 
 fn run_and_return(event_loop: &mut EventLoop<UserEvent>, mut winit_app: impl WinitApp) {
@@ -939,6 +939,8 @@ mod wgpu_integration {
             event_loop: &EventLoopWindowTarget<UserEvent>,
             event: &winit::event::Event<'_, UserEvent>,
         ) -> EventResult {
+            let my_window_id = self.window().map(|w| w.id());
+
             match event {
                 winit::event::Event::Resumed => {
                     if let Some(running) = &self.running {
@@ -969,7 +971,9 @@ mod wgpu_integration {
                     EventResult::Wait
                 }
 
-                winit::event::Event::WindowEvent { event, .. } => {
+                winit::event::Event::WindowEvent { event, window_id }
+                    if Some(window_id) == my_window_id.as_ref() =>
+                {
                     if let Some(running) = &mut self.running {
                         // On Windows, if a window is resized by the user, it should repaint synchronously, inside the
                         // event handler.
@@ -1068,9 +1072,123 @@ mod wgpu_integration {
             run_and_exit(event_loop, wgpu_eframe);
         }
     }
+
+    pub struct WgpuIdle {
+        wgpu_eframe: WgpuWinitApp,
+        native_options: NativeOptions,
+        close: bool,
+        closed: bool,
+    }
+
+    impl WgpuIdle {
+        pub fn idle(&mut self) -> bool {
+            use winit::platform::run_return::EventLoopExtRunReturn as _;
+
+            if self.closed {
+                return true;
+            }
+
+            tracing::debug!("event_loop.run_return");
+
+            let winit_app = &mut self.wgpu_eframe;
+
+            let mut exit = false;
+            with_event_loop(
+                self.native_options.clone(),
+                |event_loop, _native_options| {
+                    event_loop.run_return(|event, event_loop, control_flow| {
+                        *control_flow = ControlFlow::Exit;
+                        tracing::debug!("event {:?}", &event);
+
+                        if self.closed {
+                            return;
+                        }
+
+                        if self.close {
+                            if let Some(window) = winit_app.window() {
+                                let event_result = winit_app.on_event(
+                                    event_loop,
+                                    &winit::event::Event::WindowEvent {
+                                        window_id: window.id(),
+                                        event: winit::event::WindowEvent::CloseRequested,
+                                    },
+                                );
+                                if matches!(event_result, EventResult::Exit) {
+                                    tracing::debug!("save_and_destroy");
+                                    winit_app.save_and_destroy();
+                                    self.closed = true;
+                                    exit = true;
+                                }
+                            }
+                        }
+                        match &event {
+                            winit::event::Event::RedrawRequested(_)
+                            | winit::event::Event::RedrawEventsCleared
+                            | winit::event::Event::UserEvent(UserEvent::RequestRepaint) => {
+                                tracing::debug!("paint");
+                                winit_app.paint();
+                            }
+
+                            event => {
+                                let event_result = winit_app.on_event(event_loop, event);
+
+                                if matches!(event_result, EventResult::Exit) {
+                                    tracing::debug!("save_and_destroy");
+                                    winit_app.save_and_destroy();
+                                    self.closed = true;
+                                    exit = true;
+                                }
+                            }
+                        };
+                    });
+                },
+            );
+            exit
+        }
+
+        pub fn close(&mut self) {
+            self.close = true;
+            while !self.closed {
+                tracing::debug!("running");
+                self.idle();
+            }
+        }
+
+        pub fn size(&self) -> (i32, i32) {
+            self.wgpu_eframe
+                .window()
+                .map(|w| {
+                    let s = w.inner_size();
+                    (s.width as _, s.height as _)
+                })
+                .unwrap_or((0, 0))
+        }
+    }
+
+    pub fn idle_wgpu(
+        app_name: &str,
+        native_options: epi::NativeOptions,
+        app_creator: epi::AppCreator,
+    ) -> WgpuIdle {
+        with_event_loop(native_options, |event_loop, mut native_options| {
+            if native_options.centered {
+                centere_window_pos(event_loop.available_monitors().next(), &mut native_options);
+            }
+
+            let glow_eframe =
+                WgpuWinitApp::new(&event_loop, app_name, native_options.clone(), app_creator);
+
+            WgpuIdle {
+                wgpu_eframe: glow_eframe,
+                native_options,
+                close: false,
+                closed: false,
+            }
+        })
+    }
 }
 
 // ----------------------------------------------------------------------------
 
 #[cfg(feature = "wgpu")]
-pub use wgpu_integration::run_wgpu;
+pub use wgpu_integration::{idle_wgpu, run_wgpu, WgpuIdle};

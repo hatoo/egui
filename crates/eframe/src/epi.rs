@@ -369,6 +369,9 @@ pub struct NativeOptions {
     /// Configures wgpu instance/device/adapter/surface creation and renderloop.
     #[cfg(feature = "wgpu")]
     pub wgpu_options: egui_wgpu::WgpuConfiguration,
+
+    /// Parent Window handle
+    pub parent_window: Option<isize>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -418,6 +421,7 @@ impl Default for NativeOptions {
             centered: false,
             #[cfg(feature = "wgpu")]
             wgpu_options: egui_wgpu::WgpuConfiguration::default(),
+            parent_window: None,
         }
     }
 }
